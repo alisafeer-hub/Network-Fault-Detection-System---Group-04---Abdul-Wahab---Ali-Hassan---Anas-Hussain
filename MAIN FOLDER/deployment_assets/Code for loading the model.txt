@@ -1,0 +1,39 @@
+import pickle
+import os
+
+# Global variables will be updated by the load function
+iforest_model = None
+scaler = None
+k1 = None 
+# ... and so on for all global constants ...
+
+def load_model():
+    """Loads the trained model, scaler, and constants from disk."""
+    global iforest_model, scaler, k1, k2, anomaly_threshold, k_accel_gps, k_accel_rpm
+    
+    try:
+        # Load the ML model
+        with open('deployment_assets/iforest_model.pkl', 'rb') as f:
+            iforest_model = pickle.load(f)
+            
+        # Load the Scaler
+        with open('deployment_assets/scaler.pkl', 'rb') as f:
+            scaler = pickle.load(f)
+            
+        # Load the constants
+        with open('deployment_assets/constants.pkl', 'rb') as f:
+            constants = pickle.load(f)
+            
+        k1 = constants['k1']
+        k2 = constants['k2']
+        k_accel_gps = constants['k_accel_gps']
+        k_accel_rpm = constants['k_accel_rpm']
+        anomaly_threshold = constants['anomaly_threshold']
+
+        print("✅ Model and constants loaded successfully for prediction.")
+
+    except FileNotFoundError:
+        print("❌ Error: Deployment files not found. Cannot run prediction.")
+        
+# Call load_model() instead of setup_model() in the deployment environment
+load
