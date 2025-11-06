@@ -41,4 +41,5 @@ Execution in Jupyter/Interactive Environment
 
 To run the training process, simply copy and paste the entire contents of the Model Training code file into a single cell of your Jupyter Notebook (or Python interactive session) and execute the cell.
 
-You will find the **manual execution code **inside the **Source Code folder**.
+You will find the **manual execution code ** inside the **Source Code folder**.
+
