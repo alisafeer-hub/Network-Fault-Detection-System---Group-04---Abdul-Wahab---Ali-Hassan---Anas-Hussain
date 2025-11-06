@@ -1,0 +1,628 @@
+//Data Gathering
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+# --- Configuration ---
+NUM_ROWS = 2000
+FAULT_RATE = 0.15 # 15% of all data points will be faulty
+SEED = 42 # for reproducibility
+
+np.random.seed(SEED)
+
+# --- 1. Generate Fully Randomized Historic Timestamps (Before 2025) ---
+
+# Define the historical range: 1 year (Jan 1, 2024 to Dec 31, 2024)
+start_date = datetime(2024, 1, 1, 0, 0, 0)
+end_date = datetime(2024, 12, 31, 23, 59, 59)
+time_range_seconds = int((end_date - start_date).total_seconds())
+
+timestamps = []
+for _ in range(NUM_ROWS):
+    # Select a random number of seconds within the defined range
+    random_seconds = np.random.randint(0, time_range_seconds)
+    random_timestamp = start_date + timedelta(seconds=random_seconds)
+    timestamps.append(random_timestamp)
+
+# Sort the timestamps to maintain chronological order (crucial for time-series analysis)
+timestamps.sort()
+
+# --- 2. Generate Base Correlated Data (Normal Operation) ---
+
+# We'll use a simple index progression for correlation, as time is now random
+time_index = np.arange(NUM_ROWS)
+
+# Engine RPM (Example range: 800 to 5000 RPM)
+# Using a smooth sine wave based on index for underlying change, plus noise
+time_series_base = np.sin(np.linspace(0, 10 * np.pi, NUM_ROWS))
+rpm_base = 3000 + 2000 * time_series_base + np.random.normal(0, 50, NUM_ROWS)
+rpm_base = np.clip(rpm_base, 800, 7000)
+
+# GPS Speed (Roughly correlated with RPM)
+speed_base = 0.015 * rpm_base + np.random.normal(0, 5, NUM_ROWS)
+speed_base = np.clip(speed_base, 0, 120)
+
+# Accelerometer Readings
+accel_x_base = np.random.normal(0, 0.2, NUM_ROWS)
+accel_y_base = 0.05 * speed_base + np.random.normal(0, 0.3, NUM_ROWS)
+accel_z_base = 9.8 + np.random.normal(0, 0.1, NUM_ROWS)
+
+# Create the initial DataFrame
+data = {
+    'Timestamp': timestamps,
+    'RPM': rpm_base,
+    'GPS_Speed': speed_base,
+    'Accel_X': accel_x_base,
+    'Accel_Y': accel_y_base,
+    'Accel_Z': accel_z_base,
+}
+df = pd.DataFrame(data)
+
+# --- 3. Inject Extreme Random Faults (20% of cells) ---
+
+sensor_columns = ['RPM', 'GPS_Speed', 'Accel_X', 'Accel_Y', 'Accel_Z']
+total_cells = NUM_ROWS * len(sensor_columns)
+num_faults_to_inject = int(total_cells * FAULT_RATE)
+
+fault_indices = np.random.choice(total_cells, num_faults_to_inject, replace=False)
+fault_rows = fault_indices // len(sensor_columns)
+fault_cols = fault_indices % len(sensor_columns)
+
+FAULT_STD_MULTIPLIER = 15 
+
+for i in range(num_faults_to_inject):
+    row = fault_rows[i]
+    col_name = sensor_columns[fault_cols[i]]
+
+    original_value = df.at[row, col_name]
+    fault_type = np.random.choice(['hike', 'lower'])
+    std_dev = df[col_name].std()
+
+    if fault_type == 'hike':
+        # Hike the value by 15-30 times the standard deviation
+        fault_magnitude = np.random.uniform(FAULT_STD_MULTIPLIER, 2 * FAULT_STD_MULTIPLIER) * std_dev
+        df.at[row, col_name] = original_value + fault_magnitude
+    else: # 'lower'
+        fault_magnitude = np.random.uniform(FAULT_STD_MULTIPLIER, 2 * FAULT_STD_MULTIPLIER) * std_dev
+        new_value = original_value - fault_magnitude
+
+        if col_name == 'Accel_Z':
+            df.at[row, col_name] = np.random.choice([0, 15, -15])
+        elif col_name == 'RPM' and new_value < 0:
+            df.at[row, col_name] = np.random.uniform(50, 200)
+        elif col_name == 'GPS_Speed' and new_value < 0:
+            df.at[row, col_name] = np.random.uniform(0, 5)
+        else:
+            df.at[row, col_name] = np.clip(new_value, 0, new_value) 
+
+# --- 4. Export to CSV ---
+file_name = 'sensor_fault_dataset_v2.csv'
+df.to_csv(file_name, index=False)
+
+print(f"Dataset of {NUM_ROWS} rows created successfully!")
+print(f"File saved as: {file_name}")
+print(f"Total faults injected: {num_faults_to_inject} cells ({FAULT_RATE*100:.0f}%)")
+print("\nFirst 5 rows of the generated DataFrame:")
+print(df.head())
+
+//Data Preprocessing
+
+import pandas as pd
+import numpy as np
+import os
+from sklearn.preprocessing import StandardScaler
+
+# --- Configuration ---
+raw_file_name = 'sensor_fault_dataset_v2.csv' # Load the raw file
+preprocessed_file_name = 'sensor_data_preprocessed_final.csv'
+sensor_cols = ['RPM', 'GPS_Speed', 'Accel_X', 'Accel_Y', 'Accel_Z']
+
+# --- 1. Load Data ---
+try:
+    df = pd.read_csv(raw_file_name)
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    print(f"✅ Loaded raw data from: {raw_file_name}")
+except FileNotFoundError:
+    print(f"❌ Error: Raw file '{raw_file_name}' not found. Please ensure it exists.")
+    exit()
+
+# --- 2. Isolation (No Change to Cell Values) ---
+# We explicitly skip:
+# - Dropping rows (no fault removal)
+# - Imputing missing values (no interpolation/mean substitution)
+# - Filtering outliers (no modification of extreme fault values)
+print("✅ Skipping any data modification/cleaning steps to fully retain all original cell values (including faults).")
+
+# --- 3. Feature Scaling (Standardization) ---
+# This transforms the values based on the data's mean and std dev, 
+# ensuring all sensors contribute equally to anomaly detection, but does NOT remove outliers.
+
+X = df[sensor_cols].values
+scaler = StandardScaler()
+
+# Fit the scaler to the data (including the faults) and transform it
+X_scaled = scaler.fit_transform(X)
+
+# Convert the scaled array back to a DataFrame
+df_scaled = pd.DataFrame(X_scaled, columns=sensor_cols)
+
+# --- 4. Final Clean DataFrame and Export ---
+# Concatenate the Timestamp back with the scaled features
+df_clean = pd.concat([df[['Timestamp']], df_scaled], axis=1)
+
+# Save the final preprocessed data
+df_clean.to_csv(preprocessed_file_name, index=False)
+
+print(f"\n✅ Preprocessed and scaled dataset saved to: {preprocessed_file_name}")
+
+# --- Quick Verification ---
+print("\nQuick Verification (Faults must remain as extreme outliers):")
+scaled_stats = df_clean[sensor_cols].describe().loc[['mean', 'std', 'min', 'max']]
+print(scaled_stats.to_markdown(numalign="left", stralign="left"))
+
+# ---------------- CONFIG ----------------
+input_file = 'sensor_fault_dataset_v2.csv'  # Replace with your CSV path
+output_folder = 'preprocessed_data'
+output_file_name = 'vehicle_sensor_data_preprocessed.csv'
+
+# ---------------- CREATE OUTPUT FOLDER ----------------
+os.makedirs(output_folder, exist_ok=True)
+output_path = os.path.join(output_folder, output_file_name)
+
+# ---------------- LOAD DATA ----------------
+df = pd.read_csv(input_file)
+
+# ---------------- CHECK COLUMN NAMES ----------------
+print("Columns in CSV:", df.columns.tolist())
+
+# Detect sensor columns automatically (all except Timestamp)
+timestamp_col = None
+for col in df.columns:
+    if 'time' in col.lower():
+        timestamp_col = col
+        break
+
+if timestamp_col is None:
+    raise ValueError("No timestamp column found!")
+
+sensor_columns = [col for col in df.columns if col != timestamp_col]
+
+# ---------------- SAFE PREPROCESSING ----------------
+df_preprocessed = df.copy()
+
+# 1. Convert timestamp to numerical feature (seconds since start)
+df_preprocessed['Time_sec'] = (pd.to_datetime(df_preprocessed[timestamp_col]) - 
+                               pd.to_datetime(df_preprocessed[timestamp_col].min())).dt.total_seconds()
+
+# 2. Handle missing values safely (interpolation)
+df_preprocessed[sensor_columns] = df_preprocessed[sensor_columns].interpolate(method='linear')
+
+# 3. Optional feature engineering (does not modify original sensor values)
+if 'GPS_Speed' in sensor_columns and 'Engine_RPM' in sensor_columns:
+    df_preprocessed['Delta_GPS_Speed'] = df_preprocessed['GPS_Speed'].diff().fillna(0)
+    df_preprocessed['Speed_RPM_Ratio'] = df_preprocessed['GPS_Speed'] / df_preprocessed['Engine_RPM']
+
+# ---------------- SAVE PREPROCESSED FILE ----------------
+df_preprocessed.to_csv(output_path, index=False)
+print(f"Preprocessed file saved at: {output_path}")
+
+//Model Comparison
+
+import pandas as pd
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.ensemble import IsolationForest
+from sklearn.mixture import GaussianMixture # New Model for Probabilistic/Density Estimation
+from sklearn.metrics import roc_auc_score
+import warnings
+
+# Suppress warnings for clean output
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# --- Configuration ---
+raw_file_name = 'sensor_fault_dataset_v2.csv'
+preprocessed_file_name = 'vehicle_sensor_data_preprocessed_v2.csv'
+sensor_cols = ['RPM', 'GPS_Speed', 'Accel_X', 'Accel_Y', 'Accel_Z']
+OUTLIER_THRESHOLD_STD = 5 
+
+# --- 1. Load Data and Generate Ground Truth Labels ---
+try:
+    df_raw = pd.read_csv(raw_file_name)
+    df_clean = pd.read_csv(preprocessed_file_name)
+    X_scaled = df_clean[sensor_cols].values
+except FileNotFoundError as e:
+    print(f"❌ Error loading files. Please ensure '{raw_file_name}' and '{preprocessed_file_name}' are in the same folder.")
+    print(f"Details: {e}")
+    exit()
+
+# Y_true: 1 if the row contains an anomaly in ANY sensor, 0 otherwise (Ground Truth)
+Y_true = np.zeros(len(df_raw), dtype=int)
+for col in sensor_cols:
+    mean = df_raw[col].mean()
+    std = df_raw[col].std()
+    is_outlier = (df_raw[col] > mean + OUTLIER_THRESHOLD_STD * std) | \
+                 (df_raw[col] < mean - OUTLIER_THRESHOLD_STD * std)
+    Y_true[is_outlier] = 1 
+
+print(f"Data Loaded. Total True Faults (Anomaly Rows): {np.sum(Y_true)}\n")
+
+anomaly_scores = {}
+
+# --- Helper Function for Normalizing Scores ---
+def normalize_score(scores):
+    """Scales scores between 0 and 1 (higher = more anomalous)."""
+    min_score = np.min(scores)
+    max_score = np.max(scores)
+    # Handle case where all scores might be identical (unlikely)
+    if max_score == min_score:
+        return np.zeros_like(scores)
+    return (scores - min_score) / (max_score - min_score)
+
+
+# =================================================================
+## 2. Model 1: Principal Component Analysis (PCA)
+# =================================================================
+print("--- Training PCA Model (Linear) ---")
+n_components = 3 
+pca = PCA(n_components=n_components)
+pca.fit(X_scaled)
+X_reconstructed = pca.inverse_transform(pca.transform(X_scaled))
+
+# Anomaly Score = Reconstruction Error (Higher is worse)
+pca_scores = np.sum((X_scaled - X_reconstructed)**2, axis=1)
+anomaly_scores['PCA (Reconstruction Error)'] = normalize_score(pca_scores)
+
+
+# =================================================================
+## 3. Model 2: Isolation Forest (iForest)
+# =================================================================
+print("--- Training Isolation Forest Model (Tree-based) ---")
+iforest = IsolationForest(contamination=0.20, random_state=42, n_estimators=100)
+iforest.fit(X_scaled)
+
+# Decision function: lower score is more anomalous
+iforest_raw_scores = iforest.decision_function(X_scaled)
+
+# Anomaly Score: Invert and normalize (Higher is worse)
+iforest_scores = 1 - iforest_raw_scores
+anomaly_scores['Isolation Forest'] = normalize_score(iforest_scores)
+
+
+# =================================================================
+## 4. Model 3: Gaussian Mixture Model (GMM) - Probabilistic Density
+# =================================================================
+print("--- Training Gaussian Mixture Model (Probabilistic Density) ---")
+# GMM is a probabilistic density estimator. Low probability = anomaly.
+# Use 2 components: one for "normal" driving, one for "idle/low speed" or similar behavior patterns.
+gmm = GaussianMixture(n_components=2, covariance_type='full', random_state=42)
+gmm.fit(X_scaled)
+
+# score_samples returns the log-likelihood (log-probability) of each sample.
+# Higher log-likelihood means higher probability (more normal).
+log_likelihoods = gmm.score_samples(X_scaled)
+
+# Anomaly Score: Invert the log-likelihood (Lower log-likelihood = Higher anomaly score)
+gmm_scores = -log_likelihoods
+anomaly_scores['GMM (Density Estimate)'] = normalize_score(gmm_scores)
+
+
+# =================================================================
+## 5. Evaluation and Model Selection
+# =================================================================
+print("\n--- Model Evaluation (AUC-ROC) ---")
+results = {}
+
+for model_name, scores in anomaly_scores.items():
+    auc_score = roc_auc_score(Y_true, scores)
+    results[model_name] = auc_score
+
+# Compile and sort results
+results_df = pd.DataFrame(results.items(), columns=["Model", "AUC-ROC Score"]).sort_values(by="AUC-ROC Score", ascending=False)
+
+print("\n=======================================================")
+print("          MODEL PERFORMANCE COMPARISON (AUC-ROC)")
+print("=======================================================")
+print(results_df.to_markdown(index=False))
+
+best_model_name = results_df.iloc[0]['Model']
+best_auc = results_df.iloc[0]['AUC-ROC Score']
+
+print(f"\n🏆 The Best Performing Model is: **{best_model_name}** (AUC: {best_auc:.4f})")
+print("Proceed with this model for fault attribution.")
+
+//Data Splitting
+
+import pandas as pd
+import numpy as np
+import os
+from sklearn.model_selection import train_test_split # Assuming you need to run the split
+
+# --- Contextual setup (Defining variables needed by the snippet) ---
+
+# Replace with your actual sensor names
+sensor_cols = ['RPM', 'GPS_Speed', 'Accel_X', 'Accel_Y', 'Accel_Z'] 
+OUTPUT_FOLDER = 'model_data' 
+
+# Create placeholder data for X_train, X_test, indices (2000 total rows, 80/20 split)
+total_rows = 2000
+train_rows = int(total_rows * 0.8)
+test_rows = total_rows - train_rows
+
+# Dummy scaled features (5 columns)
+X_scaled_all = np.random.rand(total_rows, len(sensor_cols))
+indices_all = np.arange(total_rows)
+
+# The necessary train_test_split that creates the input variables
+X_train, X_test, idx_train, idx_test = train_test_split(
+    X_scaled_all, indices_all, 
+    test_size=0.20, 
+    random_state=42,
+    shuffle=False 
+)
+
+# Ensure the output folder exists
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+print(f"📁 Output folder '{OUTPUT_FOLDER}' ensured.")
+
+# --- Your Code Snippet (The part that saves the files) ---
+
+df_train = pd.DataFrame(X_train, columns=sensor_cols, index=idx_train)
+df_test = pd.DataFrame(X_test, columns=sensor_cols, index=idx_test)
+
+train_file_path = os.path.join(OUTPUT_FOLDER, 'X_train_scaled.csv')
+test_file_path = os.path.join(OUTPUT_FOLDER, 'X_test_scaled.csv')
+
+df_train.to_csv(train_file_path)
+df_test.to_csv(test_file_path)
+
+print(f"✅ Training data saved to: {train_file_path}")
+print(f"✅ Testing data saved to: {test_file_path}")
+
+//Model Training
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+import warnings
+import os
+
+# Suppress warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# --- GLOBAL CONFIGURATION AND DATA SETUP ---
+# NOTE: Using placeholder data to define global variables (k1, k2, scaler, etc.)
+# Replace this with your actual data loading if necessary for the setup.
+data_size = 5000
+np.random.seed(42)
+df_raw = pd.DataFrame({
+    'Timestamp': pd.to_datetime(pd.date_range('2025-01-01', periods=data_size, freq='s')),
+    'Accel_X': np.random.normal(0, 0.5, data_size),
+    'Accel_Y': np.random.normal(0, 0.5, data_size),
+    'Accel_Z': np.random.normal(9.8, 0.1, data_size),
+    'GPS_Speed': np.random.normal(30, 10, data_size),
+    'Engine_RPM': np.random.normal(2500, 300, data_size)
+})
+sensor_cols = ['Accel_X', 'Accel_Y', 'Accel_Z', 'GPS_Speed', 'Engine_RPM']
+CONTAMINATION = 0.05
+RANDOM_STATE = 42
+DEVIATION_TOLERANCE = 0.5 # 50% deviation
+
+# Global variables for model, scaler, and constants
+iforest_model = None
+scaler = None
+k1 = None
+k2 = None
+anomaly_threshold = None
+
+# --- FILE CONFIGURATION ---
+TEST_FILE_NAME = 'X_test_scaled_v2.csv' 
+
+# =========================================================================
+# 1. SETUP FUNCTION (TRAINS MODEL AND CALCULATES CONSTANTS)
+# =========================================================================
+
+def setup_model():
+    """Trains the model, fits the scaler, and calculates k1/k2 constants."""
+    global iforest_model, scaler, k1, k2, anomaly_threshold
+
+    print("🚀 Initializing Fault Detection System (Training Model)...")
+
+    # Use 80% of data for training
+    df_train, _ = train_test_split(
+        df_raw, test_size=0.2, random_state=RANDOM_STATE, shuffle=False
+    )
+
+    # --- Calculate Proportionality Constants (k1, k2) ---
+    accel_mag_train = np.sqrt(
+        df_train['Accel_X']**2 + df_train['Accel_Y']**2 + (df_train['Accel_Z'] - 9.8)**2
+    )
+    epsilon = 1e-6
+    k1 = (df_train['GPS_Speed'] / (accel_mag_train + epsilon)).mean()
+    k2 = (df_train['Engine_RPM'] / (accel_mag_train + epsilon)).mean()
+
+    # --- Train Isolation Forest Model ---
+    X_train_raw = df_train[sensor_cols].values
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train_raw)
+
+    iforest_model = IsolationForest(contamination=CONTAMINATION, random_state=RANDOM_STATE, n_estimators=100)
+    iforest_model.fit(X_train_scaled)
+
+    # Calculate Anomaly Threshold
+    train_scores = iforest_model.decision_function(X_train_scaled)
+    anomaly_threshold = np.percentile(train_scores, CONTAMINATION * 100)
+
+    print("✅ Model Setup Complete.")
+    print(f"k1 (GPS_Speed factor): {k1:.2f}, k2 (Engine_RPM factor): {k2:.2f}")
+    print(f"Anomaly Threshold Score: {anomaly_threshold:.4f}")
+
+# =========================================================================
+# 2. PREDICTION INTERFACE FUNCTION (CORE LOGIC)
+# =========================================================================
+
+def predict_fault_on_new_reading(accel_x, accel_y, accel_z, gps_speed, engine_rpm):
+    """
+    Takes 5 sensor readings, runs both IF detection and physics-based attribution,
+    and prints a clear report.
+    """
+    global iforest_model, scaler, k1, k2, anomaly_threshold, sensor_cols
+    
+    if iforest_model is None:
+        return
+
+    # A. Format and Scale the raw input for IF model
+    raw_input_data = {
+        'Accel_X': accel_x, 'Accel_Y': accel_y, 'Accel_Z': accel_z, 
+        'GPS_Speed': gps_speed, 'Engine_RPM': engine_rpm
+    }
+    df_new_input = pd.DataFrame([raw_input_data], columns=sensor_cols)
+    X_new_raw = df_new_input.values
+    X_new_scaled = scaler.transform(X_new_raw)
+
+    # B. Isolation Forest Detection
+    anomaly_score = iforest_model.decision_function(X_new_scaled)[0]
+    is_anomaly = (anomaly_score < anomaly_threshold)
+
+    # C. Physics-Based Correlation Check (Fault Attribution)
+    faulty_sensors = []
+    
+    # Calculate Magnitude of Net Acceleration
+    accel_mag = np.sqrt(
+        accel_x**2 + accel_y**2 + (accel_z - 9.8)**2
+    )
+    
+    # Compute Expected Values
+    expected_gps = k1 * accel_mag
+    expected_rpm = k2 * accel_mag
+    
+    # Check GPS_Speed deviation
+    if gps_speed > 1:
+        gps_dev_ratio = np.abs(gps_speed - expected_gps) / gps_speed
+        if gps_dev_ratio > DEVIATION_TOLERANCE:
+            faulty_sensors.append('GPS_Speed')
+        
+    # Check Engine_RPM deviation
+    if engine_rpm > 1:
+        rpm_dev_ratio = np.abs(engine_rpm - expected_rpm) / engine_rpm
+        if rpm_dev_ratio > DEVIATION_TOLERANCE:
+            faulty_sensors.append('Engine_RPM')
+        
+    # Final Attribution Logic
+    if is_anomaly and not faulty_sensors:
+        faulty_sensors.append('Accel_Sensor(s)')
+    elif not is_anomaly and faulty_sensors:
+        pass # Keep the flags
+
+    # D. Print Report
+    print("\n" + "="*50)
+    print(f"      {'🚨 FAULT DETECTED 🚨' if is_anomaly or faulty_sensors else '🟢 NORMAL READING 🟢'}     ")
+    print("="*50)
+    print(f"Input Reading:")
+    print(f"  Accel_X: {accel_x:.2f}, Accel_Y: {accel_y:.2f}, Accel_Z: {accel_z:.2f}")
+    print(f"  GPS_Speed: {gps_speed:.2f}, Engine_RPM: {engine_rpm:.2f}")
+    print("-" * 50)
+    print(f"Model Anomaly Score: {anomaly_score:.4f} ({'ANOMALY' if is_anomaly else 'NORMAL'})")
+    
+    if faulty_sensors:
+        print(f"\nFAULT ATTRIBUTION (Physics Check):")
+        print(f"-> Faulty Sensor(s) Identified: {', '.join(faulty_sensors)}")
+        print(f"   Expected GPS_Speed: {expected_gps:.2f} (Actual: {gps_speed:.2f})")
+        print(f"   Expected Engine_RPM: {expected_rpm:.2f} (Actual: {engine_rpm:.2f})")
+    elif is_anomaly:
+        print(f"\nATTRIBUTION:")
+        print("-> ANOMALY detected by Isolation Forest. Suspect: Subtle correlation or Accel_Sensor(s) fault.")
+    else:
+        print("\nATTRIBUTION: All sensors and correlations are within normal limits.")
+
+    print("="*50)
+
+# =========================================================================
+# 3. TESTING LOOP FUNCTION
+# =========================================================================
+
+def test_model_on_test_data(file_name):
+    """Loads the test data file and runs the prediction function on sample rows."""
+    print("\n\n################ STARTING BATCH TEST EVALUATION ################")
+    
+    try:
+        # Load the test data file
+        # The first column is often an index saved by pandas, so we use index_col=0
+        df_test = pd.read_csv(file_name, index_col=0) 
+        
+    except FileNotFoundError:
+        print(f"❌ Error: Test data file not found at '{file_name}'. Please ensure the file is in the same folder.")
+        return
+    except Exception as e:
+        print(f"❌ Error loading data: {e}.")
+        return
+
+    # Check for initialization before proceeding
+    if iforest_model is None or k1 is None:
+         print("❌ Setup Error: Model or constants are not initialized. Run setup_model() first.")
+         return
+
+    print(f"Loaded {len(df_test)} records for testing.")
+    
+    # Run the prediction function for a few sample rows (first 5)
+    test_indices = [0, 1, 2, 3, 4] 
+    test_indices = sorted(list(set([i for i in test_indices if i < len(df_test)])))
+
+    for i in test_indices:
+        row = df_test.iloc[i]
+        
+        print(f"\n======== Row Index {row.name} (Test Sample {i+1}) ========")
+        
+        # Call the interactive prediction function
+        predict_fault_on_new_reading(
+            accel_x=row['Accel_X'], 
+            accel_y=row['Accel_Y'], 
+            accel_z=row['Accel_Z'], 
+            gps_speed=row['GPS_Speed'], 
+            engine_rpm=row['RPM']
+        )
+    
+    print("\n################ BATCH TEST EVALUATION COMPLETE ################")
+
+# =========================================================================
+# 4. EXECUTION
+# =========================================================================
+
+# Step 1: Initialize and train the model
+setup_model()
+
+# Step 2: Run the testing loop against the test file
+test_model_on_test_data(TEST_FILE_NAME)
+
+//Manual Testing
+
+# --- 1. RUN SETUP (Assuming you have the setup_model() function defined) ---
+# This step must be executed once to initialize the model and constants.
+setup_model() 
+
+# --- 2. DEFINE YOUR CUSTOM READING ---
+
+# Replace these values with your desired sensor readings:
+custom_accel_x = 0.5    
+custom_accel_y = 0.1
+custom_accel_z = 9.8 
+custom_gps_speed = 40.0
+custom_engine_rpm = 2600.0
+
+# --- 3. RUN THE PREDICTION FUNCTION ---
+
+print("\n--- Testing Custom Reading ---")
+
+# Call the function directly (row_number is set to "Custom" here)
+predict_fault_on_new_reading(
+    accel_x=custom_accel_x,
+    accel_y=custom_accel_y,
+    accel_z=custom_accel_z,
+    gps_speed=custom_gps_speed,
+    engine_rpm=custom_engine_rpm,
+    row_number="Custom_001" 
+)

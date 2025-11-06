@@ -1,0 +1,26 @@
+# --- 1. RUN SETUP (Assuming you have the setup_model() function defined) ---
+# This step must be executed once to initialize the model and constants.
+setup_model() 
+
+# --- 2. DEFINE YOUR CUSTOM READING ---
+
+# Replace these values with your desired sensor readings:
+custom_accel_x = 0.5    
+custom_accel_y = 0.1
+custom_accel_z = 9.8 
+custom_gps_speed = 40.0
+custom_engine_rpm = 2600.0
+
+# --- 3. RUN THE PREDICTION FUNCTION ---
+
+print("\n--- Testing Custom Reading ---")
+
+# Call the function directly (row_number is set to "Custom" here)
+predict_fault_on_new_reading(
+    accel_x=custom_accel_x,
+    accel_y=custom_accel_y,
+    accel_z=custom_accel_z,
+    gps_speed=custom_gps_speed,
+    engine_rpm=custom_engine_rpm,
+    row_number="Custom_001" 
+)
